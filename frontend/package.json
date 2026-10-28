@@ -1,0 +1,15 @@
+{
+  "name": "labsmanager-calendars-ui",
+  "private": true,
+  "version": "1.8.0",
+  "type": "module",
+  "scripts": { "build": "tsc --noEmit && vite build" },
+  "peerDependencies": { "react": "^19.2.0" },
+  "devDependencies": {
+    "@fullcalendar/react": "^7.1.0",
+    "@types/react": "^19.2.5",
+    "@vitejs/plugin-react-swc": "^4.2.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.2.4"
+  }
+}

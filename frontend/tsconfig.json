@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "lib": ["ES2022", "DOM"], "module": "ESNext",
+    "moduleResolution": "Bundler", "jsx": "react-jsx", "strict": true,
+    "skipLibCheck": true, "noEmit": true, "types": ["vite/client"],
+    "baseUrl": ".", "paths": {
+      "@labsmanager/plugin-ui": ["../../../../../django_project/labsmanager/frontend/src/plugin-api.ts"],
+      "@labsmanager/plugin-calendar": ["../../../../../django_project/labsmanager/frontend/src/plugin-calendar.ts"],
+      "@/*": ["../../../../../django_project/labsmanager/frontend/src/*"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

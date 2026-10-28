@@ -1,0 +1,22 @@
+# Script local de compilation
+frontend/build_script.sh
+
+# Dépendances frontend
+frontend/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Environnement local
+.env
+.env.*
+!.env.example
+
+# Fichiers temporaires
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
