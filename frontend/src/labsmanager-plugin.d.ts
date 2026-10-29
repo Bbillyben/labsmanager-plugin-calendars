@@ -23,6 +23,8 @@ declare module '@labsmanager/plugin-ui' {
   export const SheetDescription: ComponentType<{ children?: ReactNode }>
   export const ConfirmDialog: ComponentType<{ title: string; description: string; pending: boolean; error?: ReactNode; onConfirm: () => void; onCancel: () => void; returnFocus: RefObject<HTMLElement | null>; destructive?: boolean; confirmLabel?: string }>
   export function useTranslation(): { language: string }
+  export function registerPluginTranslations(namespace: string, entries: Partial<Record<'fr' | 'en', Record<string, string>>>): void
+  export function usePluginTranslation(namespace: string): { language: 'fr' | 'en'; t: (key: string, variables?: Record<string, string | number>) => string }
   export function copyPluginToken(input: HTMLInputElement): Promise<boolean>
   export function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
 }

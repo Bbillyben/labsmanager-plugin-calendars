@@ -1,4 +1,4 @@
-.calendars-page { max-width: 1200px; margin: 0 auto; padding: var(--space-6, 1.5rem); color: var(--foreground); }
+.calendars-page { max-width: 1200px; margin: 0; padding: var(--space-6, 1.5rem); color: var(--foreground); }
 .calendars-header, .calendars-toolbar, .calendars-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3, .75rem); flex-wrap: wrap; }
 .calendars-header { margin-bottom: var(--space-6, 1.5rem); }
 .calendars-header h1 { font-size: 1.65rem; font-weight: 650; }

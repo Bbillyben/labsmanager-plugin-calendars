@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, ConfirmDialog, EntityActionMenu, EntitySearch, employeeFilterSources, PluginCalendarView, PluginPublishedCalendarActions, projectFilterSources, teamFilterSources, Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, useTranslation, type EntitySearchSource, type PluginCalendarEvent } from '@labsmanager/plugin-ui'
+import { Alert, Button, ConfirmDialog, EntityActionMenu, EntitySearch, employeeFilterSources, PluginCalendarView, PluginPublishedCalendarActions, projectFilterSources, teamFilterSources, Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, registerPluginTranslations, usePluginTranslation, type EntitySearchSource, type PluginCalendarEvent } from '@labsmanager/plugin-ui'
 import './style.css'
 import {
   createCalendar, createEvent, createType, deleteEvent, deleteType, listAttachments, setAttachments as saveAttachments, listCalendars, listEvents, listResources,
   listMembers, listTypes, removeMember, resolveEligibleEmployee, resolveUser, searchEligibleEmployees, searchUsers, setMember, updateCalendar,
   updateEvent, updateType, type Attachment, type Attachments, type Calendar, type CalendarContext, type Event, type EventType, type EventWrite, type Member, type Role,
 } from './api'
+import fr from './locales/fr.json'
+import en from './locales/en.json'
+
+registerPluginTranslations('calendars', { fr, en })
 
 type Range = { start: string; end: string }
 type EventDraft = { event: Event | null; range: Range; allDay: boolean }
-type Locale = { [K in keyof typeof copy.fr]: string }
+type Locale = { [K in keyof typeof fr]: string }
 
 function presentationEvent(item: Event, calendarName: string, id: string): PluginCalendarEvent {
   return { id, title: item.title, start: item.start, end: item.end, allDay: item.all_day,
@@ -23,66 +27,10 @@ function draftRange(start: string, end: string, allDay: boolean): Range {
   return { start, end: allDay ? nextDay(start) : new Date(new Date(start).getTime() + 60 * 60_000).toISOString() }
 }
 
-const copy = {
-  fr: {
-    title: 'Calendriers', choose: 'Calendrier', createCalendar: 'Créer un calendrier', manage: 'Administrer',
-    generalCalendars: 'Calendriers généraux', managedCalendars: 'Calendriers administrables',
-    calendarType: 'Type', attachedCalendar: 'Rattaché', generalCalendar: 'Général', actions: 'Actions',
-    eventsCalendar: 'Événements', assignmentsCalendar: 'Affectations d’employés', typeLocked: 'Le type est verrouillé dès qu’un événement existe.',
-    assignedEmployees: 'Employés affectés', assignedHelp: 'Les affectations historiques restent visibles et peuvent être retirées.',
-    empty: 'Aucun calendrier général accessible.', managedEmpty: 'Aucun calendrier administrable.', loading: 'Chargement…',
-    loadError: 'Impossible de charger les calendriers.', eventsError: 'Impossible de charger les événements.', typesError: 'Impossible de charger les types.',
-    retry: 'Réessayer', allTypes: 'Tous les types', typeFilter: 'Type d’événement',
-    name: 'Nom', description: 'Description', color: 'Couleur', save: 'Enregistrer', cancel: 'Annuler',
-    settings: 'Paramètres', types: 'Types d’événements', members: 'Partage',
-    accessMode: 'Mode d’accès', inherited: 'Hérité', restricted: 'Restreint',
-    inheritedHelp: 'Les personnes autorisées à consulter un objet associé peuvent voir ce calendrier. Modifier ou administrer nécessite un droit explicite.',
-    restrictedHelp: 'Seuls les utilisateurs explicitement autorisés, le créateur et les administrateurs globaux peuvent accéder à ce calendrier.',
-    attachments: 'Rattachements', employees: 'Employés', teams: 'Équipes', projects: 'Projets',
-    attachmentError: 'Impossible de charger les rattachements.', saved: 'Modifications enregistrées.',
-    removeAttachmentDescription: 'Le rattachement sera retiré du calendrier.',
-    newType: 'Nouveau type', active: 'Disponible', customColor: 'Couleur propre', add: 'Ajouter', remove: 'Retirer',
-    owner: 'Créateur', user: 'Utilisateur', level: 'Droit', view: 'Lecture', edit: 'Écriture', manageLevel: 'Gestion',
-    event: 'Événement', newEvent: 'Nouvel événement', addEvent: 'Ajouter un événement', titleField: 'Titre', start: 'Début', end: 'Fin exclusive',
-    allDay: 'Journée entière', noType: 'Sans type', delete: 'Supprimer',
-    deleteEvent: 'Supprimer cet événement ?', deleteEventDescription: 'Cette suppression est définitive.',
-    deleteType: 'Supprimer ce type ?', deleteTypeDescription: 'Seul un type inutilisé peut être supprimé.',
-    invalidDates: 'La fin doit être après le début.', saveError: 'Enregistrement impossible.',
-    noAccess: 'Accès indisponible.', close: 'Fermer',
-    visibleCalendars: 'Calendriers affichés', chooseDestination: 'Choisir le calendrier de destination', continue: 'Continuer',
-    contextualEmpty: 'Aucun calendrier accessible pour cette fiche.',
-    subscribe: 'S’abonner', copied: 'Lien ICS copié.', copyManually: 'Lien ICS à copier', subscriptionError: 'Impossible de créer l’abonnement.',
-  },
-  en: {
-    title: 'Calendars', choose: 'Calendar', createCalendar: 'Create calendar', manage: 'Manage',
-    generalCalendars: 'General calendars', managedCalendars: 'Managed calendars',
-    calendarType: 'Type', attachedCalendar: 'Attached', generalCalendar: 'General', actions: 'Actions',
-    eventsCalendar: 'Events', assignmentsCalendar: 'Employee assignments', typeLocked: 'The type is locked once an event exists.',
-    assignedEmployees: 'Assigned employees', assignedHelp: 'Historical assignments remain visible and can be removed.',
-    empty: 'No general calendars available.', managedEmpty: 'No calendars to manage.', loading: 'Loading…',
-    loadError: 'Unable to load calendars.', eventsError: 'Unable to load events.', typesError: 'Unable to load event types.',
-    retry: 'Retry', allTypes: 'All types', typeFilter: 'Event type',
-    name: 'Name', description: 'Description', color: 'Color', save: 'Save', cancel: 'Cancel',
-    settings: 'Settings', types: 'Event types', members: 'Sharing',
-    accessMode: 'Access mode', inherited: 'Inherited', restricted: 'Restricted',
-    inheritedHelp: 'People allowed to view an attached object can view this calendar. Editing and management require explicit access.',
-    restrictedHelp: 'Only explicitly authorized users, the owner and global administrators can access this calendar.',
-    attachments: 'Attachments', employees: 'Employees', teams: 'Teams', projects: 'Projects',
-    attachmentError: 'Unable to load attachments.', saved: 'Changes saved.',
-    removeAttachmentDescription: 'This attachment will be removed from the calendar.',
-    newType: 'New type', active: 'Available', customColor: 'Custom color', add: 'Add', remove: 'Remove',
-    owner: 'Owner', user: 'User', level: 'Access', view: 'View', edit: 'Edit', manageLevel: 'Manage',
-    event: 'Event', newEvent: 'New event', addEvent: 'Add event', titleField: 'Title', start: 'Start', end: 'Exclusive end',
-    allDay: 'All day', noType: 'No type', delete: 'Delete',
-    deleteEvent: 'Delete this event?', deleteEventDescription: 'This cannot be undone.',
-    deleteType: 'Delete this type?', deleteTypeDescription: 'Only an unused type can be deleted.',
-    invalidDates: 'The end must be after the start.', saveError: 'Unable to save.',
-    noAccess: 'Access unavailable.', close: 'Close',
-    visibleCalendars: 'Visible calendars', chooseDestination: 'Choose destination calendar', continue: 'Continue',
-    contextualEmpty: 'No accessible calendars for this record.',
-    subscribe: 'Subscribe', copied: 'ICS link copied.', copyManually: 'Copy ICS link', subscriptionError: 'Unable to create the subscription.',
-  },
-} as const
+function useLabels(): Locale {
+  const { t } = usePluginTranslation('calendars')
+  return useMemo(() => Object.fromEntries(Object.keys(fr).map((key) => [key, t(key)])) as Locale, [t])
+}
 
 function errorText(error: unknown, fallback: string) {
   if (error && typeof error === 'object' && 'payload' in error) {
@@ -407,8 +355,7 @@ function ManageSheet({ calendar, types, typesError, labels, initialSection, onCa
 
 export function Page({ context }: { context: Record<string, unknown> }) {
   void context
-  const { language } = useTranslation()
-  const labels: Locale = language.startsWith('fr') ? copy.fr : copy.en
+  const labels = useLabels()
   const [calendars, setCalendars] = useState<Calendar[]>([])
   const [calendarId, setCalendarId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -469,7 +416,7 @@ export function Page({ context }: { context: Record<string, unknown> }) {
     if (selected?.can_edit) setDraft({ event: null, range: draftRange(info.start, info.end, info.allDay), allDay: info.allDay })
   }
   return <section className="calendars-page">
-    <header className="calendars-header"><h1>{labels.title}</h1></header>
+    {/* <header className="calendars-header"><h1>{labels.title}</h1></header> */}
     {loading && <p role="status">{labels.loading}</p>}
     {loadError && <Alert tone="danger">{labels.loadError} <Button onClick={() => void reload()}>{labels.retry}</Button></Alert>}
     {!loading && !loadError && !calendars.length && <p>{labels.empty}</p>}
@@ -496,8 +443,7 @@ export function Page({ context }: { context: Record<string, unknown> }) {
 
 export function SettingsPanel({ context }: { context: Record<string, unknown> }) {
   void context
-  const { language } = useTranslation()
-  const labels: Locale = language.startsWith('fr') ? copy.fr : copy.en
+  const labels = useLabels()
   const [calendars, setCalendars] = useState<Calendar[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
@@ -564,8 +510,7 @@ export function SettingsPanel({ context }: { context: Record<string, unknown> })
 
 /** One contextual view for Employee, Team and Project tabs. */
 export function ContextTab({ context }: { context: Record<string, unknown> }) {
-  const { language } = useTranslation()
-  const labels: Locale = language.startsWith('fr') ? copy.fr : copy.en
+  const labels = useLabels()
   const entity = context.entity
   const objectId = context.objectId
   const valid = (entity === 'employee' || entity === 'team' || entity === 'project') && Number.isInteger(objectId) && Number(objectId) > 0
