@@ -237,6 +237,31 @@ class CalendarsTests(TestCase):
                                    data={"title": "Updated"}).status_code, 200)
         self.assertEqual(self.call(api.EventDetail, "delete", self.editor, pk=self.calendar.pk, event_id=event_id).status_code, 204)
 
+    def test_native_event_location_is_optional_editable_and_returned(self):
+        created = self.call(api.Events, "post", self.owner, pk=self.calendar.pk,
+                            data=self.event_payload(location="Salle Émile"))
+        self.assertEqual(created.status_code, 201)
+        event_id = created.data["id"]
+        self.assertEqual(created.data["location"], "Salle Émile")
+        self.assertEqual(self.call(api.EventDetail, "get", self.viewer, pk=self.calendar.pk,
+                                   event_id=event_id).data["location"], "Salle Émile")
+        self.assertEqual(self.call(api.EventDetail, "patch", self.editor, pk=self.calendar.pk,
+                                   event_id=event_id, data={"location": "Bureau 2"}).data["location"], "Bureau 2")
+        self.assertEqual(self.call(api.EventDetail, "patch", self.editor, pk=self.calendar.pk,
+                                   event_id=event_id, data={"location": ""}).data["location"], "")
+        self.assertEqual(Event.objects.get(pk=event_id).location, "")
+        plain = self.call(api.Events, "post", self.owner, pk=self.calendar.pk,
+                          data=self.event_payload(title="Sans lieu"))
+        self.assertEqual(plain.status_code, 201)
+        self.assertEqual(plain.data["location"], "")
+        assigned = Calendar.objects.create(name="Affectations", created_by=self.owner,
+                                           calendar_type="assignments")
+        assignment = self.call(api.Events, "post", self.owner, pk=assigned.pk,
+                               data=self.event_payload(event_type=None, location="Annexe", employees=[]))
+        self.assertEqual(assignment.status_code, 201)
+        self.assertEqual(assignment.data["location"], "Annexe")
+        self.assertEqual(assignment.data["employees"], [])
+
     def test_authentication_and_user_search_are_scoped_to_managers(self):
         request = APIRequestFactory().get("/")
         self.assertEqual(api.Calendars.as_view()(request).status_code, 403)
@@ -516,7 +541,7 @@ class CalendarsTests(TestCase):
 
         provider = Calendars()
         event = Event.objects.create(calendar=self.calendar, created_by=self.owner,
-                                     title="Séminaire", description="Équipe",
+                                     title="Séminaire", description="Équipe", location="Salle Émile",
                                      start=self.start, end=self.start + timedelta(hours=2),
                                      event_type=self.kind)
         self.assertEqual([item.id for item in provider.list_published_calendars(self.viewer)],
@@ -530,6 +555,7 @@ class CalendarsTests(TestCase):
         self.assertEqual([item.id for item in current], [str(event.pk)])
         self.assertEqual(current[0].title, "Séminaire")
         self.assertEqual(current[0].description, "Équipe")
+        self.assertEqual(current[0].metadata["location"], "Salle Émile")
         self.assertEqual(current[0].color, self.kind.color)
         self.assertEqual(provider.get_published_events(self.viewer, str(self.calendar.pk),
                          self.start + timedelta(hours=2), self.start + timedelta(hours=3)), [])

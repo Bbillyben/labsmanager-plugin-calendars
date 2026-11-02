@@ -95,7 +95,7 @@ Calendars implémente le contrat `PublishedCalendarMixin` du cœur. Les calendri
 
 La page générale et les onglets contextuels Employee, Team et Project affichent les actions du slot générique `published-calendar.actions`. L'action « S'abonner » et sa fenêtre sont fournies par ICalExport ; Calendars ne connaît ni son module React ni ses routes. Ouvrir la fenêtre ne crée aucun token. Désactiver ICalExport retire l'action sans affecter les calendriers.
 
-Les calendriers `assignments` annoncent l'option `assigned_to_me`, absente des calendriers `events`. Lorsque le propriétaire du token la demande, le filtre `Event.employees` est appliqué au queryset avant sérialisation ; un utilisateur sans Employee associé obtient un flux vide. Le titre des événements d'affectation assemble le type, le titre et les noms visibles des employés affectés, triés de manière stable, sans modifier le titre stocké ni multiplier les VEVENT. Les métadonnées `links` contiennent seulement les chemins des rattachements Employee, Team et Project consultables ; un calendrier sans rattachement pointe vers la page générale. ICalExport convertit ces chemins en liens absolus et les ajoute à la description ICS.
+Les calendriers `assignments` annoncent l'option `assigned_to_me`, absente des calendriers `events`. Lorsque le propriétaire du token la demande, le filtre porte sur les Employee effectivement affectés à chaque occurrence ; un utilisateur sans Employee associé obtient un flux vide. Le titre des événements d'affectation assemble le type, le titre et les noms visibles des employés affectés, triés de manière stable, sans modifier le titre stocké ni multiplier les VEVENT. Les métadonnées `links` contiennent seulement les chemins des rattachements Employee, Team et Project consultables ; un calendrier sans rattachement pointe vers la page générale. ICalExport convertit ces chemins en liens absolus et les ajoute à la description ICS.
 
 Cette version n'ajoute aucune migration. Vérifier que la migration précédente `0003` est appliquée avant l'usage des calendriers de type affectations. Compiler le frontend du plugin, d'ICalExport et du cœur (action React partagée), collecter les fichiers statiques, puis redémarrer les processus Django pour actualiser le registre.
 
@@ -106,3 +106,107 @@ Cette version n'ajoute aucune migration. Vérifier que la migration précédente
 La vue ressources utilise une seule ligne par Employee, y compris en cas de plusieurs calendriers, et place un événement multi-affecté sur toutes ses lignes sans le dupliquer en base. Les événements sans ligne Employee visible, notamment ceux d'un calendrier `events` affiché en même temps, restent dans l'unique ligne virtuelle « Sans ligne employé » ; celle-ci ne crée aucun Employee. `GET /resources/` réutilise l'éligibilité et la visibilité Employee existantes. Pour un calendrier sans rattachement, il borne les lignes aux employés affectés pendant la période demandée, afin d'éviter de charger tout le personnel. Les employés historiquement affectés et toujours visibles sont aussi pris dans la réponse des événements. Les formulaires et permissions d'édition restent ceux du plugin.
 
 Le bouton Imprimer utilise `PrintProvider` du cœur et son renderer `plugin-calendar`. La prévisualisation reçoit uniquement les événements, filtres et lignes déjà affichés ; elle ne déclenche aucun chargement supplémentaire. Les contrôles interactifs sont masqués par le mécanisme d'impression du cœur. Une vérification visuelle reste nécessaire pour les périodes longues, les événements couvrant plusieurs jours et la pagination papier. Aucun nouveau modèle, mixin ou migration n'est requis. Publier le build React du cœur avant le bundle Calendars, exécuter `collectstatic`, puis redémarrer Django pour découvrir les assets du plugin.
+
+# External calendar backend (phase B)
+
+The `external` calendar type retains the same calendar visibility, attachments,
+access mode, and sharing rules as the existing types. Its events are local,
+read-only copies of remote `VEVENT` components. The source URL is write-only in
+the API and is visible neither in list responses nor in the Django Admin.
+
+`POST /plugin/api/calendars/` accepts `calendar_type: "external"` and a required
+`url` (public HTTPS). `PATCH /plugin/api/calendars/<id>/` accepts a replacement
+`url`, `enabled`, and `interval_minutes` (15–10080). Authorized managers see
+`external.has_url`, status, timestamps, and synchronization statistics in
+calendar responses. `POST /plugin/api/calendars/<id>/sync/` queues a refresh and
+returns HTTP 202; it does not download within the request. The existing events
+list endpoint expands local recurrences only for its requested window.
+
+The scheduled task scans due sources every 15 minutes; sources default to a
+60-minute interval. A full, validated feed is applied atomically by remote
+`UID` and `RECURRENCE-ID`: unchanged rows are untouched, missing rows become
+inactive, and failures retain the last valid rows. Recurrence expansion uses
+`python-dateutil`; it does not materialize future instances. The external
+publisher supplies original `VEVENT` and `VTIMEZONE` components to the generic
+ICalExport writer, which namespaces UIDs without changing native exports.
+
+Downloads allow only public HTTPS addresses. DNS answers are checked and the
+connection is pinned to a checked address while TLS verifies the hostname.
+Redirects are rejected; response size, event count, and network time are
+bounded. Error messages omit the private subscription URL.
+
+## External calendar frontend (phase C)
+
+The existing calendar form offers **External Calendar** with a write-only HTTPS
+URL, a synchronization interval, and an enabled switch. Once saved, the URL
+field is empty; `external.has_url` indicates that a source exists, and entering
+a new URL replaces it. The SettingsPanel shows the last synchronization result
+and lets a calendar manager queue a refresh through `POST /sync/`. While queued
+or running, the button is disabled and the panel polls the existing calendar
+list endpoint for status updates. The regular calendar views render the
+read-only external occurrences and open a details sheet without edit or delete
+actions. Their existing published-calendar subscription control remains in use.
+
+## Native recurrence backend (lot 1)
+
+Native `Event` rows can carry `recurrence_rule` (an RRULE without its prefix),
+`recurrence_timezone` (IANA name), and optional ISO date-time arrays `rdates`
+and `exdates`. The original `start` and `end` define the first occurrence and
+its local wall-clock duration. Only `DAILY`, `WEEKLY`, `MONTHLY`, and `YEARLY`
+rules are accepted. Recurrences are expanded for bounded reads; no calculated
+occurrences are persisted. Nonexistent local times during daylight-saving
+changes are skipped; ambiguous times use the first fold.
+
+`GET /api/calendars/<calendar>/events/?start=...&end=...` returns effective
+occurrences for recurring series. They expose `series_id`, the original ISO
+`recurrence_id`, and `is_exception`; one-off events retain their numeric `id`.
+The window is `[start, end)`, at most 370 days, with a 5,000 occurrence cap.
+
+`PATCH` and `DELETE` on
+`/api/calendars/<calendar>/events/<series>/occurrences/<recurrence_id>/`
+edit and cancel one occurrence. The `PATCH` body only stores supplied fields;
+`inherit` can reset selected fields to series values. A date change must supply
+both `start` and `end`, and may supply `all_day`. `employees: []` is an explicit
+empty assignment, while `inherit: ["employees"]` restores inheritance.
+`POST` on the same path with `restore/` appended fully restores inheritance.
+The `recurrence_id` always identifies the originally scheduled start.
+
+A structural series `PATCH` with exceptions returns HTTP 409 and
+`code: exceptions_reset_required` plus `exceptions_revision`. Retry with
+`reset_exceptions: true` and that revision to remove exceptions atomically.
+A stale revision returns `exceptions_revision_changed`. Title, description,
+location and assignment edits preserve exceptions.
+
+Published reads expand native occurrences with stable per-occurrence IDs and
+effective assignments. Full RFC recurrence components (`RRULE`, `RECURRENCE-ID`,
+`STATUS:CANCELLED`) are not yet serialized for native series; this is a later
+ICS integration step. Existing one-off UIDs and external ICS handling remain
+unchanged.
+
+## Native recurrence interface (lot 2)
+
+The existing event sheet creates a one-off event by default. Choose daily,
+weekly, monthly, yearly or custom repetition to create a series. Custom rules
+support an interval, weekly weekdays, and monthly date or weekday position;
+the end can be open, a local date, or an occurrence count. The series records
+an explicit IANA time zone. Django validates the rule and expands the visible
+occurrences; React displays only the results returned for the current window.
+
+Opening an occurrence offers **this occurrence** or **entire series**. The first
+choice sends only changed fields to the occurrence endpoint. Each field shows
+whether it inherits from the series or has a custom value, with an action to
+restore inheritance. For assignments, a deliberately empty employee list is
+an explicit override. Editing the series preserves exceptions for ordinary
+field changes. When a structural change would reset exceptions, the sheet
+asks for confirmation and retries with the revision returned by Django; a
+stale revision requires another review and save.
+
+A one-off event, an entire series and one occurrence have distinct confirmed
+delete or cancel actions. Individually modified occurrences can be restored
+from their sheet. Canceled occurrences are absent from ordinary event lists,
+so this interface cannot locate and restore them yet. The API contract has no
+list of canceled recurrence IDs. The editor does not expose manual RDATE or
+EXDATE editing; those arrays remain unchanged when editing an existing series.
+Rules using backend modifiers that the form cannot round-trip are shown read-only
+to avoid silently changing their meaning; other series fields remain editable.
+Native series ICS serialization is still the separate lot 3.
