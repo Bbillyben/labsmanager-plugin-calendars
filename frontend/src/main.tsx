@@ -23,6 +23,7 @@ import {
 import "./style.css";
 import {
   createCalendar,
+  deleteCalendar,
   createEvent,
   createType,
   cancelOccurrence,
@@ -132,6 +133,15 @@ function errorText(error: unknown, fallback: string) {
     }
   }
   return fallback;
+}
+
+function missingCalendar(error: unknown) {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "status" in error &&
+    error.status === 404
+  );
 }
 
 function dateInput(value: string, allDay: boolean) {
@@ -1796,6 +1806,7 @@ function ManageSheet({
                       variant="secondary"
                       disabled={
                         syncPending ||
+                        !currentCalendar.is_active ||
                         !source.enabled ||
                         !source.has_url ||
                         source.status === "queued" ||
@@ -2134,15 +2145,16 @@ export function Page({ context }: { context: Record<string, unknown> }) {
           setEventsLoading(false);
         }
       },
-      () => {
+      (reason) => {
         if (!controller.signal.aborted) {
-          setEventsError(true);
+          if (missingCalendar(reason)) void reload();
+          else setEventsError(true);
           setEventsLoading(false);
         }
       },
     );
     return () => controller.abort();
-  }, [multiple, calendarId, enabled, calendars, range, revision]);
+  }, [multiple, calendarId, enabled, calendars, range, revision, reload]);
   useEffect(() => {
     if (mode !== "resources" || !range) return;
     const assignments = active.filter(
@@ -2443,6 +2455,11 @@ export function SettingsPanel({
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [actionSuccess, setActionSuccess] = useState("");
+  const [pendingId, setPendingId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState<Calendar | null>(null);
+  const actionFocus = useRef<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<{
     calendar: Calendar;
@@ -2487,6 +2504,36 @@ export function SettingsPanel({
     setEditing(null);
     void reload();
   };
+  const toggleActive = async (calendar: Calendar) => {
+    setPendingId(calendar.id);
+    setActionError("");
+    setActionSuccess("");
+    try {
+      await updateCalendar(calendar.id, { is_active: !calendar.is_active });
+      await reload();
+      setActionSuccess(labels.saved);
+    } catch (reason) {
+      setActionError(errorText(reason, labels.saveError));
+    } finally {
+      setPendingId(null);
+    }
+  };
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    setPendingId(deleting.id);
+    setActionError("");
+    setActionSuccess("");
+    try {
+      await deleteCalendar(deleting.id);
+      await reload();
+      setDeleting(null);
+      setActionSuccess(labels.calendarDeleted);
+    } catch (reason) {
+      setActionError(errorText(reason, labels.deleteCalendarError));
+    } finally {
+      setPendingId(null);
+    }
+  };
   const attachmentLabels = (calendar: Calendar) => {
     const groups = calendar.attachments;
     if (!groups) return "—";
@@ -2515,6 +2562,8 @@ export function SettingsPanel({
           <Button onClick={() => void reload()}>{labels.retry}</Button>
         </Alert>
       )}
+      {actionError && !deleting && <Alert tone="danger">{actionError}</Alert>}
+      {actionSuccess && <Alert tone="success">{actionSuccess}</Alert>}
       {!loading && !loadError && !calendars.length && (
         <p>{labels.managedEmpty}</p>
       )}
@@ -2525,6 +2574,7 @@ export function SettingsPanel({
               <tr>
                 <th scope="col">{labels.name}</th>
                 <th scope="col">{labels.calendarType}</th>
+                <th scope="col">{labels.calendarStatus}</th>
                 <th scope="col">{labels.attachments}</th>
                 <th scope="col">{labels.actions}</th>
               </tr>
@@ -2548,6 +2598,15 @@ export function SettingsPanel({
                       : calendar.calendar_type === "external"
                         ? labels.externalCalendar
                         : labels.eventsCalendar}
+                  </td>
+                  <td>
+                    <span
+                      className={`calendars-status ${calendar.is_active ? "" : "calendars-status-inactive"}`}
+                    >
+                      {calendar.is_active
+                        ? labels.calendarActive
+                        : labels.calendarInactive}
+                    </span>
                   </td>
                   <td>{attachmentLabels(calendar)}</td>
                   <td>
@@ -2586,6 +2645,22 @@ export function SettingsPanel({
                               label: labels.members,
                               onSelect: () =>
                                 openManagement(calendar, "members"),
+                            },
+                          ],
+                          [
+                            {
+                              id: "toggle-active",
+                              label: calendar.is_active
+                                ? labels.deactivateCalendar
+                                : labels.activateCalendar,
+                              disabled: pendingId === calendar.id,
+                              onSelect: () => void toggleActive(calendar),
+                            },
+                            {
+                              id: "delete-calendar",
+                              label: labels.deleteCalendar,
+                              disabled: pendingId === calendar.id,
+                              onSelect: () => setDeleting(calendar),
                             },
                           ],
                         ]}
@@ -2634,6 +2709,22 @@ export function SettingsPanel({
             typesRequest.current += 1;
             setEditing(null);
           }}
+        />
+      )}
+      {deleting && (
+        <ConfirmDialog
+          title={labels.deleteCalendarTitle.replace("{name}", deleting.name)}
+          description={labels.deleteCalendarDescription}
+          pending={pendingId === deleting.id}
+          error={actionError && <Alert tone="danger">{actionError}</Alert>}
+          returnFocus={actionFocus}
+          onCancel={() => {
+            setDeleting(null);
+            setActionError("");
+          }}
+          onConfirm={() => void confirmDelete()}
+          confirmLabel={labels.deletePermanently}
+          destructive
         />
       )}
     </div>
@@ -2693,6 +2784,22 @@ export function ContextTab({ context }: { context: Record<string, unknown> }) {
     ? `${enabled.join(",")}:${range.start}:${range.end}`
     : "";
 
+  const refreshAvailableCalendars = useCallback(async () => {
+    if (!scope) return;
+    try {
+      const result = await listCalendars(undefined, scope);
+      setCalendars(result.results);
+      setEnabled((current) =>
+        current.filter((id) => result.results.some((item) => item.id === id)),
+      );
+      setEventsError(false);
+    } catch {
+      setEventsError(true);
+    } finally {
+      setEventsLoading(false);
+    }
+  }, [scope]);
+
   useEffect(() => {
     // Clear stale data before loading a different detail context.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -2751,15 +2858,16 @@ export function ContextTab({ context }: { context: Record<string, unknown> }) {
           setEventsLoading(false);
         }
       },
-      () => {
+      (reason) => {
         if (!controller.signal.aborted) {
-          setEventsError(true);
+          if (missingCalendar(reason)) void refreshAvailableCalendars();
+          else setEventsError(true);
           setEventsLoading(false);
         }
       },
     );
     return () => controller.abort();
-  }, [range, enabled, revision]);
+  }, [range, enabled, revision, refreshAvailableCalendars]);
 
   useEffect(() => {
     // Keep the type selector tied to the event currently being edited.

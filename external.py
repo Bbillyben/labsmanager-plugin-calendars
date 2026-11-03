@@ -14,7 +14,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import ExternalCalendarEvent, ExternalCalendarSource
+from .models import Calendar, ExternalCalendarEvent, ExternalCalendarSource
 from .recurrence import make_rules
 
 
@@ -200,12 +200,20 @@ def parse_feed(data):
         raise ExternalFeedError("The subscription is not a valid iCalendar feed.") from exc
 
 
+def _locked_source(source_id):
+    """Lock calendar before source, matching state changes and deletion."""
+    calendar_id = ExternalCalendarSource.objects.filter(pk=source_id).values_list("calendar_id", flat=True).first()
+    if calendar_id is None or not Calendar.objects.select_for_update().filter(pk=calendar_id).exists():
+        return None
+    return ExternalCalendarSource.objects.select_for_update().select_related("calendar").filter(pk=source_id).first()
+
+
 def sync_calendar(source_id):
     """Synchronize one source atomically; retain valid rows after any failure."""
     now = timezone.now()
     with transaction.atomic():
-        source = ExternalCalendarSource.objects.select_for_update().get(pk=source_id)
-        if not source.enabled or source.calendar.calendar_type != "external":
+        source = _locked_source(source_id)
+        if source is None or not source.enabled or not source.calendar.is_active or source.calendar.calendar_type != "external":
             return {"status": "disabled"}
         if source.status == "running" and source.last_attempt and now - source.last_attempt < timedelta(minutes=15):
             return {"status": "running"}
@@ -217,7 +225,9 @@ def sync_calendar(source_id):
     try:
         records, timezones = parse_feed(download(url))
         with transaction.atomic():
-            source = ExternalCalendarSource.objects.select_for_update().get(pk=source_id)
+            source = _locked_source(source_id)
+            if source is None or not source.calendar.is_active:
+                return {"status": "disabled"}
             if source.url != url or not source.enabled:
                 source.status = "pending"
                 source.save(update_fields=("status",))
@@ -250,7 +260,7 @@ def sync_calendar(source_id):
             return {"status": "success", **counts}
     except Exception as exc:
         message = str(exc) if isinstance(exc, ExternalFeedError) else "The calendar could not be synchronized."
-        ExternalCalendarSource.objects.filter(pk=source_id, url=url).update(
+        ExternalCalendarSource.objects.filter(pk=source_id, url=url, enabled=True, calendar__is_active=True).update(
             status="error", last_error=message[:200])
         return {"status": "error"}
 
@@ -258,7 +268,7 @@ def sync_calendar(source_id):
 def sync_due_calendars():
     """One ScheduleMixin task scans all enabled sources without sharing failures."""
     now = timezone.now()
-    for source in ExternalCalendarSource.objects.filter(enabled=True).only(
+    for source in ExternalCalendarSource.objects.filter(enabled=True, calendar__is_active=True).only(
             "pk", "last_attempt", "interval_minutes", "status", "sync_requested").iterator():
         due = not source.last_attempt or now - source.last_attempt >= timedelta(minutes=source.interval_minutes)
         if source.sync_requested or due:

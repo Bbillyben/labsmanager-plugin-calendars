@@ -1,5 +1,11 @@
 # Calendars V1.7
 
+## Activation et suppression des calendriers
+
+Les nouveaux calendriers sont actifs par défaut. L'administration des calendriers affiche aussi les calendriers inactifs et permet à un responsable (`manage`) de les désactiver, de les réactiver ou de les supprimer après confirmation. La désactivation conserve la configuration, les événements, les exceptions de récurrence et les affectations, mais retire immédiatement le calendrier des listes de consultation, des vues contextuelles et de la publication ICS. Les abonnements existants restent enregistrés ; ils ne livrent plus ce calendrier tant qu'il est inactif, puis peuvent fonctionner à nouveau après réactivation selon les droits du titulaire.
+
+Pour un calendrier externe, la désactivation suspend les synchronisations planifiées et manuelles. Une synchronisation déjà engagée vérifie à nouveau l'état avant d'écrire. La réactivation ne lance aucune synchronisation pendant la requête ; le planificateur ou l'action manuelle reprend le fonctionnement normal. La suppression est définitive : elle retire les événements natifs ou externes, les exceptions, les affectations et les données dépendantes du calendrier. Les autres calendriers et leurs sources restent intacts. L'API exige `manage` pour modifier l'état ou supprimer le calendrier.
+
 Calendars est un plugin **externe** qui possède ses modèles, ses API et sa page React. Il ne publie rien dans les calendriers natifs de LabsManager et n'utilise pas `CalendarEventMixin`.
 
 ## Données et droits

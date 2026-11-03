@@ -13,7 +13,11 @@ vi.mock("@labsmanager/plugin-ui", () => ({
   usePluginTranslation: () => ({
     language: "en",
     t: (key: string) =>
-      key === "selectedCalendars" ? "Selected calendars: {count}" : key,
+      key === "selectedCalendars"
+        ? "Selected calendars: {count}"
+        : key === "deleteCalendarTitle"
+          ? "Delete calendar {name}?"
+          : key,
   }),
   Alert: ({ children }: { children: React.ReactNode }) => (
     <div role="alert">{children}</div>
@@ -135,6 +139,7 @@ vi.mock("./api", async (importOriginal) => ({
   cancelOccurrence: vi.fn(),
   restoreOccurrence: vi.fn(),
   deleteEvent: vi.fn(),
+  deleteCalendar: vi.fn(),
   updateCalendar: vi.fn(),
   syncCalendar: vi.fn(),
 }));
@@ -147,6 +152,7 @@ import {
   cancelOccurrence,
   restoreOccurrence,
   deleteEvent,
+  deleteCalendar,
   listCalendars,
   listEvents,
   listTypes,
@@ -166,6 +172,7 @@ const external: Calendar = {
   created_by: 1,
   access_mode: "restricted",
   calendar_type: "external",
+  is_active: true,
   has_events: true,
   role: "manage",
   can_edit: false,
@@ -609,6 +616,27 @@ describe("multiple calendar selection", () => {
     read_only: calendar.calendar_type === "external",
   });
 
+  it("removes a calendar disabled after selection while retaining the other selection", async () => {
+    vi.mocked(listCalendars)
+      .mockResolvedValueOnce({ results: [first, second] })
+      .mockResolvedValue({ results: [first] });
+    vi.mocked(listEvents).mockImplementation(async (id) => {
+      if (id === second.id) throw { status: 404 };
+      return { results: [eventFor(first)] };
+    });
+    render(<Page context={{}} />);
+    fireEvent.change(await screen.findByLabelText("choose"), {
+      target: { value: "multiple" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "selectAll" }));
+    fireEvent.click(screen.getByRole("button", { name: "load range" }));
+    expect(await screen.findByText("Selected calendars: 1")).toBeTruthy();
+    expect(
+      await screen.findByRole("button", { name: "First event" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Second event" })).toBeNull();
+  });
+
   it("keeps simple selection and loads one calendar", async () => {
     vi.mocked(listCalendars).mockResolvedValue({ results: [first, second] });
     render(<Page context={{}} />);
@@ -756,8 +784,81 @@ describe("multiple calendar selection", () => {
 });
 
 describe("external calendar UI", () => {
+  it("shows status and refreshes after deactivation and reactivation", async () => {
+    vi.mocked(updateCalendar)
+      .mockResolvedValueOnce({ ...external, is_active: false })
+      .mockResolvedValueOnce(external);
+    vi.mocked(listCalendars)
+      .mockResolvedValueOnce({ results: [external] })
+      .mockResolvedValueOnce({ results: [{ ...external, is_active: false }] })
+      .mockResolvedValue({ results: [external] });
+    render(<SettingsPanel context={{}} />);
+    expect(await screen.findByText("calendarActive")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "deactivateCalendar" }));
+    await waitFor(() =>
+      expect(updateCalendar).toHaveBeenCalledWith(7, { is_active: false }),
+    );
+    expect(await screen.findByText("calendarInactive")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "activateCalendar" }));
+    await waitFor(() =>
+      expect(updateCalendar).toHaveBeenCalledWith(7, { is_active: true }),
+    );
+    expect(await screen.findByText("calendarActive")).toBeTruthy();
+  });
+
+  it("requires confirmation and keeps the calendar when deletion fails", async () => {
+    vi.mocked(deleteCalendar)
+      .mockRejectedValueOnce(new Error("failed"))
+      .mockResolvedValueOnce(undefined);
+    vi.mocked(listCalendars)
+      .mockResolvedValueOnce({ results: [external] })
+      .mockResolvedValue({ results: [] });
+    render(<SettingsPanel context={{}} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "deleteCalendar" }),
+    );
+    expect(
+      screen.getByRole("alertdialog").getAttribute("aria-label"),
+    ).toContain("Remote");
+    fireEvent.click(
+      screen.getByRole("button", { name: "cancel confirmation" }),
+    );
+    expect(deleteCalendar).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "deleteCalendar" }));
+    fireEvent.click(screen.getByRole("button", { name: "confirm action" }));
+    await waitFor(() => expect(deleteCalendar).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "confirm action" }));
+    await waitFor(() => expect(deleteCalendar).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("managedEmpty")).toBeTruthy();
+  });
+
   it("has matching French and English translation keys", () => {
     expect(Object.keys(fr).sort()).toEqual(Object.keys(en).sort());
+    expect(fr.calendarInactive).toBe("Inactif");
+    expect(en.calendarInactive).toBe("Inactive");
+  });
+
+  it("keeps the displayed calendar when a status change fails", async () => {
+    vi.mocked(updateCalendar).mockRejectedValue(new Error("failed"));
+    render(<SettingsPanel context={{}} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "deactivateCalendar" }),
+    );
+    expect(await screen.findByText("saveError")).toBeTruthy();
+    expect(screen.getByText("calendarActive")).toBeTruthy();
+    expect(listCalendars).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables manual sync for an inactive external calendar", async () => {
+    vi.mocked(listCalendars).mockResolvedValue({
+      results: [{ ...external, is_active: false }],
+    });
+    render(<SettingsPanel context={{}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "settings" }));
+    expect(
+      screen.getByRole("button", { name: "syncNow" }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 
   it("creates an external calendar with its private URL and interval", async () => {
@@ -906,6 +1007,10 @@ describe("external calendar UI", () => {
     await screen.findByText("Remote");
     expect(screen.queryByRole("button", { name: "settings" })).toBeNull();
     expect(screen.queryByRole("button", { name: "syncNow" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "deactivateCalendar" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "deleteCalendar" })).toBeNull();
   });
 
   it("renders external events as read-only and keeps the shared subscription action", async () => {

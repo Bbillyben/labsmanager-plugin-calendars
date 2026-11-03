@@ -21,6 +21,7 @@ class Calendar(models.Model):
     color = models.CharField(max_length=7, default="#3b82f6", validators=[color_validator])
     access_mode = models.CharField(max_length=10, choices=ACCESS_MODES, default="restricted")
     calendar_type = models.CharField(max_length=11, choices=CALENDAR_TYPES, default="events")
+    is_active = models.BooleanField(default=True)
     employees = models.ManyToManyField("staff.Employee", blank=True, related_name="plugin_calendars")
     teams = models.ManyToManyField("staff.Team", blank=True, related_name="plugin_calendars")
     projects = models.ManyToManyField("project.Project", blank=True, related_name="plugin_calendars")

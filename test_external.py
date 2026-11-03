@@ -117,6 +117,64 @@ class ExternalCalendarTests(TestCase):
             external.sync_due_calendars()
         sync.assert_called_once_with(self.source.pk)
 
+    def test_inactive_external_calendar_suspends_and_resumes_sync(self):
+        from .Calendars import Calendars as Provider
+
+        with patch.object(external, "download", return_value=feed(event())):
+            self.assertEqual(external.sync_calendar(self.source.pk)["status"], "success")
+        self.calendar.is_active = False
+        self.calendar.save(update_fields=("is_active",))
+        with patch.object(external, "sync_calendar") as sync:
+            external.sync_due_calendars()
+        sync.assert_not_called()
+        with patch.object(external, "download") as download:
+            self.assertEqual(external.sync_calendar(self.source.pk)["status"], "disabled")
+        download.assert_not_called()
+        self.assertEqual(self.call(api.ExternalCalendarSync, "post", self.owner).status_code, 400)
+        self.assertEqual(self.call(api.Events, "get", self.viewer).status_code, 404)
+        self.assertEqual(ExternalCalendarEvent.objects.filter(source=self.source, active=True).count(), 1)
+        self.assertNotIn(str(self.calendar.pk), [item.id for item in Provider().list_published_calendars(self.viewer)])
+        self.calendar.is_active = True
+        self.calendar.save(update_fields=("is_active",))
+        self.assertEqual(self.call(api.Events, "get", self.viewer).status_code, 200)
+        with patch.object(external, "download", return_value=feed(event())):
+            self.assertEqual(external.sync_calendar(self.source.pk)["status"], "success")
+
+    def test_inflight_sync_cannot_write_after_deactivation_or_deletion(self):
+        def deactivate(_url):
+            self.calendar.is_active = False
+            self.calendar.save(update_fields=("is_active",))
+            return feed(event())
+
+        with patch.object(external, "download", side_effect=deactivate):
+            self.assertEqual(external.sync_calendar(self.source.pk)["status"], "disabled")
+        self.assertFalse(ExternalCalendarEvent.objects.filter(source=self.source).exists())
+        self.calendar.is_active = True
+        self.calendar.save(update_fields=("is_active",))
+        self.source.status = "pending"
+        self.source.save(update_fields=("status",))
+
+        def delete(_url):
+            response = self.call(api.CalendarDetail, "delete", self.owner)
+            self.assertEqual(response.status_code, 204)
+            return feed(event())
+
+        with patch.object(external, "download", side_effect=delete):
+            self.assertEqual(external.sync_calendar(self.source.pk)["status"], "disabled")
+        self.assertFalse(ExternalCalendarSource.objects.filter(pk=self.source.pk).exists())
+        self.assertFalse(ExternalCalendarEvent.objects.exists())
+
+    def test_deletion_preserves_another_external_calendar_and_source(self):
+        other = Calendar.objects.create(name="Other remote", created_by=self.owner, calendar_type="external")
+        other_source = ExternalCalendarSource.objects.create(calendar=other, url="https://other.example.test/feed")
+        with patch.object(external, "download", return_value=feed(event())):
+            external.sync_calendar(self.source.pk)
+            external.sync_calendar(other_source.pk)
+        self.assertEqual(self.call(api.CalendarDetail, "delete", self.owner).status_code, 204)
+        self.assertFalse(ExternalCalendarSource.objects.filter(pk=self.source.pk).exists())
+        self.assertTrue(ExternalCalendarSource.objects.filter(pk=other_source.pk).exists())
+        self.assertEqual(ExternalCalendarEvent.objects.filter(source=other_source).count(), 1)
+
     def test_running_sync_is_not_started_twice_and_invalid_feed_keeps_rows(self):
         self.source.status = "running"
         self.source.last_attempt = api.timezone.now()

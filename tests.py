@@ -57,6 +57,65 @@ class CalendarsTests(TestCase):
         self.assertIn(("plugin_calendars", "0002_calendar_access_mode_calendar_employees_and_more"), executor.loader.graph.nodes)
         self.assertIn(("plugin_calendars", "0003_calendar_type_event_employees"), executor.loader.graph.nodes)
         self.assertIn("calendar_type", [field.name for field in Calendar._meta.fields])
+        self.assertIn(("plugin_calendars", "0007_calendar_is_active"), executor.loader.graph.nodes)
+        self.assertTrue(self.calendar.is_active)
+
+    def test_inactive_calendar_is_managed_but_not_read_or_published(self):
+        from django.http import Http404
+        from .Calendars import Calendars as Provider
+
+        event = Event.objects.create(calendar=self.calendar, created_by=self.owner, title="Retained",
+                                     start=self.start, end=self.start + timedelta(hours=1))
+        self.assertIn(self.calendar.pk, [item["id"] for item in self.call(api.Calendars, "get", self.viewer).data["results"]])
+        self.assertEqual(self.call(api.CalendarDetail, "patch", self.editor, pk=self.calendar.pk,
+                                   data={"is_active": False}).status_code, 403)
+        self.assertEqual(self.call(api.CalendarDetail, "patch", self.owner, pk=self.calendar.pk,
+                                   data={"is_active": False}).status_code, 200)
+        self.assertNotIn(self.calendar.pk, [item["id"] for item in self.call(api.Calendars, "get", self.owner).data["results"]])
+        managed = self.call(api.Calendars, "get", self.owner, url="/?scope=managed").data["results"]
+        self.assertFalse(next(item for item in managed if item["id"] == self.calendar.pk)["is_active"])
+        self.assertEqual(self.call(api.CalendarDetail, "get", self.viewer, pk=self.calendar.pk).status_code, 404)
+        self.assertEqual(self.call(api.Events, "get", self.owner, pk=self.calendar.pk).status_code, 404)
+        self.assertEqual(self.call(api.EventTypes, "get", self.viewer, pk=self.calendar.pk).status_code, 404)
+        self.assertEqual(self.call(api.EventTypes, "get", self.owner, pk=self.calendar.pk).status_code, 200)
+        self.assertNotIn(str(self.calendar.pk), [item.id for item in Provider().list_published_calendars(self.viewer)])
+        with self.assertRaises(Http404):
+            Provider().get_published_calendar(self.viewer, str(self.calendar.pk))
+        self.assertTrue(Event.objects.filter(pk=event.pk).exists())
+        self.assertEqual(self.call(api.CalendarDetail, "patch", self.owner, pk=self.calendar.pk,
+                                   data={"is_active": True}).status_code, 200)
+        period = "/?" + urlencode({"start": self.start.isoformat(),
+                                   "end": (self.start + timedelta(days=2)).isoformat()})
+        self.assertEqual(self.call(api.Events, "get", self.owner, pk=self.calendar.pk, url=period).status_code, 200)
+        self.assertEqual(Provider().get_published_calendar(self.viewer, str(self.calendar.pk)).id,
+                         str(self.calendar.pk))
+
+    def test_delete_calendar_requires_manage_and_cascades_native_events(self):
+        from .models import EventOccurrenceException
+
+        event = Event.objects.create(calendar=self.calendar, created_by=self.owner, title="Series",
+                                     start=self.start, end=self.start + timedelta(hours=1),
+                                     event_type=self.kind, recurrence_rule="FREQ=DAILY;COUNT=2", recurrence_timezone="UTC")
+        exception = EventOccurrenceException.objects.create(event=event, recurrence_id=self.start, cancelled=True)
+        self.assertEqual(self.call(api.CalendarDetail, "delete", self.viewer, pk=self.calendar.pk).status_code, 403)
+        self.assertEqual(self.call(api.CalendarDetail, "delete", self.stranger, pk=self.calendar.pk).status_code, 404)
+        self.assertEqual(self.call(api.CalendarDetail, "delete", self.owner, pk=self.calendar.pk).status_code, 204)
+        self.assertFalse(Calendar.objects.filter(pk=self.calendar.pk).exists())
+        self.assertFalse(Event.objects.filter(pk=event.pk).exists())
+        self.assertFalse(EventOccurrenceException.objects.filter(pk=exception.pk).exists())
+        self.assertFalse(EventType.objects.filter(pk=self.kind.pk).exists())
+        self.assertTrue(Calendar.objects.filter(pk=self.other.pk).exists())
+
+    def test_delete_assignment_calendar_removes_employee_links(self):
+        assigned = Calendar.objects.create(name="Assignments", created_by=self.owner, calendar_type="assignments")
+        employee = Employee.objects.create(first_name="Ada", last_name="Test")
+        event = Event.objects.create(calendar=assigned, created_by=self.owner, title="Shift",
+                                     start=self.start, end=self.start + timedelta(hours=1))
+        event.employees.add(employee)
+        self.assertTrue(Event.employees.through.objects.filter(event=event, employee=employee).exists())
+        self.assertEqual(self.call(api.CalendarDetail, "delete", self.owner, pk=assigned.pk).status_code, 204)
+        self.assertFalse(Event.employees.through.objects.filter(event_id=event.pk).exists())
+        self.assertTrue(Employee.objects.filter(pk=employee.pk).exists())
 
     def test_calendar_type_defaults_and_locks_after_event_creation(self):
         self.assertEqual(self.calendar.calendar_type, "events")

@@ -9,6 +9,7 @@ export type Calendar = {
   created_by: number;
   access_mode: "inherited" | "restricted";
   calendar_type: "events" | "assignments" | "external";
+  is_active: boolean;
   has_events: boolean;
   role: Role;
   can_edit: boolean;
@@ -30,6 +31,7 @@ export type CalendarWrite = Pick<
   Calendar,
   "name" | "description" | "color" | "access_mode" | "calendar_type"
 > & {
+  is_active?: boolean;
   url?: string;
   interval_minutes?: number;
   enabled?: boolean;
@@ -149,12 +151,14 @@ export const createCalendar = (data: CalendarWrite) =>
     headers: json,
     body: body(data),
   });
-export const updateCalendar = (id: number, data: CalendarWrite) =>
+export const updateCalendar = (id: number, data: Partial<CalendarWrite>) =>
   apiRequest<Calendar>(path(id), {
     method: "PATCH",
     headers: json,
     body: body(data),
   });
+export const deleteCalendar = (id: number) =>
+  apiRequest<void>(path(id), { method: "DELETE" });
 export const syncCalendar = (id: number) =>
   apiRequest<{ status: string }>(`${path(id)}sync/`, { method: "POST" });
 export const searchEligibleEmployees = (

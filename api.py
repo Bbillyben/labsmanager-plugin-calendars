@@ -58,12 +58,12 @@ def visible_objects(user):
     return employees, visible_teams(user), Project.get_instances_for_user("view", user, Project.objects.all())
 
 
-def visible_calendars(user):
+def visible_calendars(user, *, include_inactive=False):
     employees, teams, projects = visible_objects(user)
     employee_links = Calendar.employees.through.objects.filter(calendar_id=OuterRef("pk"))
     team_links = Calendar.teams.through.objects.filter(calendar_id=OuterRef("pk"))
     project_links = Calendar.projects.through.objects.filter(calendar_id=OuterRef("pk"))
-    base = Calendar.objects.annotate(
+    base = (Calendar.objects if include_inactive else Calendar.objects.filter(is_active=True)).annotate(
         inherited_employee=Exists(employee_links.filter(employee_id__in=employees.values("pk"))),
         inherited_team=Exists(team_links.filter(team_id__in=teams.values("pk"))),
         inherited_project=Exists(project_links.filter(project_id__in=projects.values("pk"))),
@@ -101,9 +101,12 @@ def contextual_calendars(request, entity, object_id):
     return associated_calendars(request.user, entity, context[entity].pk)
 
 
-def calendar_for(request, pk, required="view"):
-    calendar = get_object_or_404(visible_calendars(request.user), pk=pk)
+def calendar_for(request, pk, required="view", *, management_read=False):
+    calendar = get_object_or_404(visible_calendars(
+        request.user, include_inactive=required == "manage" or management_read), pk=pk)
     role = role_for(calendar, request.user)
+    if not calendar.is_active and required != "manage" and (not management_read or role != "manage"):
+        raise Http404
     if role not in LEVEL or LEVEL[role] < LEVEL[required]:
         raise PermissionDenied("Insufficient calendar access.")
     return calendar
@@ -116,6 +119,7 @@ def calendar_data(calendar, user):
     data = {
         "id": calendar.pk, "name": calendar.name, "description": calendar.description,
         "color": calendar.color, "access_mode": calendar.access_mode, "calendar_type": calendar.calendar_type,
+        "is_active": calendar.is_active,
         "has_events": (source.events.filter(active=True).exists() if source and source.enabled else False) if external else
                       (calendar.has_events if hasattr(calendar, "has_events") else calendar.events.exists()),
         "created_by": calendar.created_by_id,
@@ -288,7 +292,7 @@ def period_bound(raw):
 class CalendarWrite(serializers.ModelSerializer):
     class Meta:
         model = Calendar
-        fields = ("name", "description", "color", "access_mode", "calendar_type")
+        fields = ("name", "description", "color", "access_mode", "calendar_type", "is_active")
 
 
 ATTACHMENTS = {"employees": Employee, "teams": Team, "projects": Project}
@@ -418,7 +422,7 @@ class Calendars(CalendarAPI):
                 raise ValidationError({f"{entity}_id": "Expected a positive object id."})
             calendars = contextual_calendars(request, entity, int(raw_id))
         else:
-            calendars = visible_calendars(request.user)
+            calendars = visible_calendars(request.user, include_inactive=scope == "managed")
             if scope == "general":
                 calendars = calendars.filter(has_employee=False, has_team=False, has_project=False)
             elif scope == "managed" and not request.user.is_superuser:
@@ -453,7 +457,7 @@ class CalendarDetail(CalendarAPI):
     def patch(self, request, pk):
         calendar_for(request, pk, "manage")
         with transaction.atomic():
-            calendar = Calendar.objects.select_for_update().get(pk=pk)
+            calendar = get_object_or_404(Calendar.objects.select_for_update(), pk=pk)
             next_type = request.data.get("calendar_type", calendar.calendar_type)
             payload, options = external_options(request.data, next_type)
             if next_type == "external" and calendar.calendar_type != "external" and not options.get("url"):
@@ -463,9 +467,25 @@ class CalendarDetail(CalendarAPI):
             try:
                 write.save()
                 save_external_options(calendar, options)
+                if not calendar.is_active and calendar.calendar_type == "external":
+                    ExternalCalendarSource.objects.filter(calendar=calendar).update(
+                        status="pending", sync_requested=False)
             except DjangoValidationError as error:
                 model_error(error)
         return Response(calendar_data(calendar, request.user))
+
+    def delete(self, request, pk):
+        calendar_for(request, pk, "manage")
+        with transaction.atomic():
+            # Match the calendar-first lock order used by external synchronization.
+            calendar = get_object_or_404(Calendar.objects.select_for_update(), pk=pk)
+            ExternalCalendarSource.objects.select_for_update().filter(calendar=calendar).first()
+            # EventType is CASCADE from Calendar, while Event references its type
+            # with PROTECT. Remove native events first so that protection remains
+            # effective for direct EventType deletion.
+            calendar.events.all().delete()
+            calendar.delete()
+        return Response(status=204)
 
 
 class ExternalCalendarSync(CalendarAPI):
@@ -476,6 +496,9 @@ class ExternalCalendarSync(CalendarAPI):
         if calendar.calendar_type != "external":
             raise ValidationError({"calendar_type": "Only external calendars can be synchronized."})
         with transaction.atomic():
+            calendar = get_object_or_404(Calendar.objects.select_for_update(), pk=calendar.pk)
+            if not calendar.is_active:
+                raise ValidationError({"is_active": "An inactive calendar cannot be synchronized."})
             source = get_object_or_404(ExternalCalendarSource.objects.select_for_update(), calendar=calendar)
             if not source.enabled:
                 raise ValidationError({"enabled": "The subscription is disabled."})
@@ -600,7 +623,7 @@ class CalendarMemberDetail(CalendarAPI):
 
 class EventTypes(CalendarAPI):
     def get(self, request, pk):
-        calendar = calendar_for(request, pk)
+        calendar = calendar_for(request, pk, management_read=True)
         return Response({"results": [type_data(item) for item in calendar.event_types.all()]})
 
     def post(self, request, pk):

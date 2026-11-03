@@ -69,6 +69,17 @@
   border-radius: 50%;
   flex: none;
 }
+.calendars-status {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--foreground);
+  white-space: nowrap;
+}
+.calendars-status-inactive {
+  color: var(--muted-foreground);
+}
 .calendars-toolbar {
   justify-content: flex-start;
   margin-bottom: var(--space-4, 1rem);
